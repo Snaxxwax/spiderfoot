@@ -17,10 +17,27 @@ from typing import Any
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from spiderfoot.auth.models import AuthConfig
+from spiderfoot.auth.models import AuthBackendUnavailable, AuthConfig
 from spiderfoot.auth.rbac import Role, UserContext, parse_role
 
 log = logging.getLogger("spiderfoot.auth.middleware")
+
+
+def _backend_unavailable_response():
+    """503 for an auth-backend outage, so it is not mistaken for a bad credential."""
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "code": "AUTH_BACKEND_UNAVAILABLE",
+                "message": "Authentication backend is unavailable; retry shortly.",
+            }
+        },
+        headers={"Retry-After": "5"},
+    )
+
 
 # Paths that never require authentication
 PUBLIC_PATHS = frozenset({
@@ -124,6 +141,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 auth_svc = get_auth_service()
                 user_ctx = auth_svc.api_key_to_user_context(api_key_raw)
                 request.state.user = user_ctx
+            except AuthBackendUnavailable as e:
+                # The database is unreachable, so the credential was never
+                # actually checked -- 401 would blame the caller for an outage.
+                log.error(
+                    "Auth backend unavailable during api key validation: %s", e
+                )
+                request.state.user = None
+                if auth_required and not is_public:
+                    return _backend_unavailable_response()
             except Exception as e:
                 log.debug("API key validation failed: %s", e)
                 request.state.user = None
@@ -144,6 +170,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 auth_svc = get_auth_service()
                 user_ctx = auth_svc.token_to_user_context(token)
                 request.state.user = user_ctx
+            except AuthBackendUnavailable as e:
+                # The database is unreachable, so the credential was never
+                # actually checked -- 401 would blame the caller for an outage.
+                log.error(
+                    "Auth backend unavailable during token validation: %s", e
+                )
+                request.state.user = None
+                if auth_required and not is_public:
+                    return _backend_unavailable_response()
             except Exception as e:
                 log.debug("Token validation failed: %s", e)
                 request.state.user = None
