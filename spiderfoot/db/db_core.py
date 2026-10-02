@@ -436,6 +436,51 @@ class DbCore:
     def _log_db_error(self, msg, exc):
         log.error("[DB] %s: %s", msg, exc)
 
+
+    @staticmethod
+    def _checkout_live_conn(pool, attempts: int = 5):
+        """Check out a pooled connection that is actually alive.
+
+        psycopg2's pool hands back whatever it cached without validating it.
+        After Postgres restarts those sockets are dead, and libpq reports them
+        as open until it next attempts I/O -- ``closed`` is still 0 and the
+        transaction status is still IDLE -- so only a real query reveals it.
+        Without this, the first request after a restart failed with
+        "cursor already closed" from inside the schema setup in __init__.
+
+        Each dead connection is returned with ``close=True`` so the pool drops
+        it and builds a fresh one, rather than serving it again to the next
+        caller.  The connection is ours exclusively at this point, so an
+        unconditional rollback cannot discard anyone else's work.
+        """
+        import psycopg2
+        from psycopg2 import extensions as pg_ext
+
+        last_error = None
+        for _ in range(attempts):
+            conn = pool.getconn()
+            try:
+                if conn.closed:
+                    raise psycopg2.OperationalError("pooled connection is closed")
+                if conn.get_transaction_status() != pg_ext.TRANSACTION_STATUS_IDLE:
+                    # Left dirty or aborted by a previous holder; only a
+                    # rollback clears an aborted transaction.
+                    conn.rollback()
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                return conn
+            except psycopg2.Error as e:
+                last_error = e
+                try:
+                    pool.putconn(conn, close=True)
+                except Exception:  # noqa: BLE001 - pool state is best-effort here
+                    pass
+                log.warning("Discarded a dead pooled connection: %s", e)
+
+        raise psycopg2.OperationalError(
+            f"no live pooled connection after {attempts} attempts: {last_error}"
+        )
+
     def __init__(self, opts: dict, init: bool = False) -> None:
         """
         Initialize the DbCore object.
@@ -479,7 +524,7 @@ class DbCore:
                         log.info("Created PostgreSQL connection pool (max=%s)",
                                  opts.get('__db_max_connections', 20))
 
-                self.conn = DbCore._pool.getconn()
+                self.conn = DbCore._checkout_live_conn(DbCore._pool)
                 self.dbh = self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
                 self._owns_pooled_conn = True
             except Exception as e:

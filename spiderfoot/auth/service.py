@@ -173,16 +173,19 @@ class AuthService:
             status = conn.get_transaction_status()
             if status == pg_ext.TRANSACTION_STATUS_UNKNOWN:
                 return False
-            if status in (
-                pg_ext.TRANSACTION_STATUS_INTRANS,
-                pg_ext.TRANSACTION_STATUS_ACTIVE,
-            ):
-                # A transaction is genuinely in flight.  Do not ping and do not
-                # roll back: that would discard a caller's uncommitted work.
+            if status == pg_ext.TRANSACTION_STATUS_ACTIVE:
+                # A statement is executing on this connection right now, so
+                # touching it would corrupt the protocol.  Nothing to validate.
                 return True
             if status == pg_ext.TRANSACTION_STATUS_INERROR:
-                # Aborted but recoverable; rollback is the only way out.
+                # Aborted but recoverable; rollback is the only way out, and
+                # the transaction is already doomed so nothing is lost.
                 conn.rollback()
+            # Ping even when a transaction is open (INTRANS).  Reads here never
+            # commit, so INTRANS is the normal resting state between requests
+            # -- skipping the ping for it would skip exactly the request that
+            # needs it, right after Postgres restarts.  A SELECT 1 inside an
+            # open transaction neither commits nor discards a caller's work.
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
             return True

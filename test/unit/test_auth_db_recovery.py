@@ -53,6 +53,9 @@ class FakeConn:
         self.rollbacks += 1
         self.status = pg_ext.TRANSACTION_STATUS_IDLE
 
+    def __repr__(self):
+        return f"<FakeConn dead={self.dead}>"
+
     def close(self):
         self.closed = 1
 
@@ -88,13 +91,46 @@ def test_aborted_transaction_is_recovered():
     assert conn.rollbacks == 1, "aborted tx is only escapable via rollback"
 
 
-def test_in_flight_transaction_is_not_disturbed():
-    """Never roll back or ping a live transaction: that would drop writes."""
+def test_open_transaction_is_pinged_but_never_rolled_back():
+    """INTRANS is the normal resting state here, since reads never commit.
+
+    Skipping the ping for it skipped exactly the request that needed it: the
+    first one after a Postgres restart. Pinging is safe (a SELECT 1 inside an
+    open transaction commits nothing); rolling back would not be.
+    """
     svc = AuthService()
     conn = FakeConn(status=pg_ext.TRANSACTION_STATUS_INTRANS)
     svc._db_conn = conn
     assert svc._get_conn() is conn
-    assert conn.rollbacks == 0 and conn.queries == []
+    assert conn.queries == ["SELECT 1"], "must still validate an INTRANS conn"
+    assert conn.rollbacks == 0, "must not discard a caller's uncommitted work"
+
+
+def test_stale_connection_resting_in_open_transaction_is_replaced(monkeypatch):
+    """The exact regression: dead socket whose last local state was INTRANS.
+
+    Reproduced live as a 503 on the first request after `docker restart
+    sf-postgres`, because the INTRANS early-return skipped validation.
+    """
+    dead = FakeConn(dead=True, status=pg_ext.TRANSACTION_STATUS_INTRANS)
+    svc = AuthService()
+    svc._db_conn = dead
+
+    fresh = FakeConn()
+    monkeypatch.setenv("SF_POSTGRES_DSN", "postgresql://x/y")
+    monkeypatch.setattr(psycopg2, "connect", lambda dsn: fresh)
+
+    assert svc._get_conn() is fresh, "a dead INTRANS conn must be replaced"
+    assert dead.closed == 1
+
+
+def test_active_connection_is_left_alone():
+    """ACTIVE means a statement is executing: touching it corrupts the protocol."""
+    svc = AuthService()
+    conn = FakeConn(status=pg_ext.TRANSACTION_STATUS_ACTIVE)
+    svc._db_conn = conn
+    assert svc._get_conn() is conn
+    assert conn.queries == [] and conn.rollbacks == 0
 
 
 def test_unreachable_db_raises_backend_unavailable(monkeypatch):
