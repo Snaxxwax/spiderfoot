@@ -69,6 +69,11 @@ def _is_public_path(path: str) -> bool:
     return False
 
 
+# Minted keys use KEY_PREFIX ("sfk_"); this module previously hard-coded "sf_",
+# which no minted key matches, so every API key was misrouted to JWT validation.
+from spiderfoot.auth.api_keys import KEY_PREFIX
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     """FastAPI middleware that validates JWT tokens and sets request.state.user."""
 
@@ -95,7 +100,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if auth_header.startswith("Bearer "):
             bearer_val = auth_header[7:]
             # API keys start with "sf_"
-            if bearer_val.startswith("sf_"):
+            if bearer_val.startswith(KEY_PREFIX):
                 api_key_raw = bearer_val
             else:
                 token = bearer_val
@@ -104,7 +109,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not token and not api_key_raw:
             qp = request.query_params.get("api_key", "")
             if qp:
-                if qp.startswith("sf_"):
+                if qp.startswith(KEY_PREFIX):
                     api_key_raw = qp
                 else:
                     token = qp
@@ -113,7 +118,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if not token and not api_key_raw:
             x_api_key = request.headers.get("x-api-key", "")
             if x_api_key:
-                if x_api_key.startswith("sf_"):
+                if x_api_key.startswith(KEY_PREFIX):
                     api_key_raw = x_api_key
                 else:
                     token = x_api_key
