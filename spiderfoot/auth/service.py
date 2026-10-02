@@ -12,6 +12,7 @@ Handles:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -59,6 +60,7 @@ bcrypt = _BcryptCompat()
 from spiderfoot.auth.models import (
     AccountStatus,
     ApiKey,
+    AuthBackendUnavailable,
     AuthConfig,
     AuthMethod,
     Session,
@@ -87,6 +89,23 @@ def reset_auth_service() -> None:
     _auth_service = None
 
 
+
+@contextlib.contextmanager
+def _db_outage_as_backend_error(what: str):
+    """Re-raise a Postgres failure as AuthBackendUnavailable.
+
+    ``_get_conn`` already covers a connection that was dead *before* the call.
+    This covers Postgres dying *during* it, which would otherwise surface as a
+    bare psycopg2 error and be reported as a rejected credential.
+    """
+    import psycopg2
+
+    try:
+        yield
+    except psycopg2.Error as e:
+        raise AuthBackendUnavailable(f"auth database failed during {what}: {e}") from e
+
+
 class AuthService:
     """Central auth service managing users, tokens, and sessions."""
 
@@ -101,20 +120,74 @@ class AuthService:
     # ------------------------------------------------------------------
 
     def _get_conn(self):
-        """Get or create a database connection."""
+        """Get or create a database connection.
+
+        The connection is cached for the life of the process, so it has to be
+        validated before reuse.  Two states leave it permanently unusable:
+
+        * Postgres restarted, or killed our backend.  libpq does not notice
+          until it next attempts I/O, so ``conn.closed`` is still 0 and the
+          transaction status is still IDLE -- only a real query reveals it.
+        * An earlier statement failed.  autocommit is off, so the connection
+          sits in an aborted transaction and every later query raises
+          InFailedSqlTransaction until something rolls back.
+
+        Either way the cached connection is dead for good, and all ~35 call
+        sites in this class keep failing until the process restarts.
+        Validating here repairs every one of them in one place.
+        """
+        import psycopg2
+
         if self._db_conn is not None:
-            return self._db_conn
+            if self._conn_is_usable(self._db_conn):
+                return self._db_conn
+            log.warning("Auth DB connection unusable; reconnecting.")
+            try:
+                self._db_conn.close()
+            except Exception:  # noqa: BLE001 - already broken, nothing to salvage
+                pass
+            self._db_conn = None
 
         pg_dsn = os.environ.get("SF_POSTGRES_DSN", "")
         if not pg_dsn:
             raise RuntimeError("SF_POSTGRES_DSN environment variable is required")
 
-        import psycopg2
-        self._db_conn = psycopg2.connect(pg_dsn)
+        try:
+            self._db_conn = psycopg2.connect(pg_dsn)
+        except psycopg2.Error as e:
+            raise AuthBackendUnavailable(f"cannot reach auth database: {e}") from e
         self._db_conn.autocommit = False
         self._db_type = "postgresql"
 
         return self._db_conn
+
+    @staticmethod
+    def _conn_is_usable(conn) -> bool:
+        """Pre-ping a cached connection, the way SQLAlchemy's pool does."""
+        import psycopg2
+        from psycopg2 import extensions as pg_ext
+
+        if conn.closed:
+            return False
+        try:
+            status = conn.get_transaction_status()
+            if status == pg_ext.TRANSACTION_STATUS_UNKNOWN:
+                return False
+            if status in (
+                pg_ext.TRANSACTION_STATUS_INTRANS,
+                pg_ext.TRANSACTION_STATUS_ACTIVE,
+            ):
+                # A transaction is genuinely in flight.  Do not ping and do not
+                # roll back: that would discard a caller's uncommitted work.
+                return True
+            if status == pg_ext.TRANSACTION_STATUS_INERROR:
+                # Aborted but recoverable; rollback is the only way out.
+                conn.rollback()
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return True
+        except psycopg2.Error:
+            return False
 
     def _ph(self, idx: int = 1) -> str:
         """Return the PostgreSQL parameter placeholder."""
@@ -382,15 +455,20 @@ class AuthService:
         )
 
     def token_to_user_context(self, token: str) -> UserContext:
-        """Decode a JWT and return a UserContext."""
-        payload = self.validate_token(token)
-        role = parse_role(payload.get("role", "viewer"))
-        return UserContext(
-            user_id=payload.get("sub", ""),
-            username=payload.get("username", ""),
-            email=payload.get("email", ""),
-            role=role,
-        )
+        """Decode a JWT and return a UserContext.
+
+        Raises AuthBackendUnavailable if the database cannot be reached, and
+        ValueError only when the token itself is genuinely bad.
+        """
+        with _db_outage_as_backend_error("token validation"):
+            payload = self.validate_token(token)
+            role = parse_role(payload.get("role", "viewer"))
+            return UserContext(
+                user_id=payload.get("sub", ""),
+                username=payload.get("username", ""),
+                email=payload.get("email", ""),
+                role=role,
+            )
 
     # ------------------------------------------------------------------
     # User CRUD
@@ -1537,28 +1615,33 @@ class AuthService:
         return None
 
     def api_key_to_user_context(self, raw_key: str) -> UserContext:
-        """Validate an API key and return a UserContext."""
-        api_key = self.validate_api_key(raw_key)
-        if not api_key:
-            raise ValueError("Invalid or expired API key")
+        """Validate an API key and return a UserContext.
 
-        user = self.get_user_by_id(api_key.user_id)
-        if not user or not user.is_active():
-            raise ValueError("API key owner account is inactive")
+        Raises AuthBackendUnavailable if the database cannot be reached, and
+        ValueError only when the key itself is genuinely bad.
+        """
+        with _db_outage_as_backend_error("API key validation"):
+            api_key = self.validate_api_key(raw_key)
+            if not api_key:
+                raise ValueError("Invalid or expired API key")
 
-        role = parse_role(api_key.role)
-        return UserContext(
-            user_id=user.id,
-            username=user.username,
-            email=user.email,
-            role=role,
-            api_key_id=api_key.id,
-            metadata={
-                "allowed_modules": api_key.allowed_modules,
-                "allowed_endpoints": api_key.allowed_endpoints,
-                "rate_limit": api_key.rate_limit,
-            },
-        )
+            user = self.get_user_by_id(api_key.user_id)
+            if not user or not user.is_active():
+                raise ValueError("API key owner account is inactive")
+
+            role = parse_role(api_key.role)
+            return UserContext(
+                user_id=user.id,
+                username=user.username,
+                email=user.email,
+                role=role,
+                api_key_id=api_key.id,
+                metadata={
+                    "allowed_modules": api_key.allowed_modules,
+                    "allowed_endpoints": api_key.allowed_endpoints,
+                    "rate_limit": api_key.rate_limit,
+                },
+            )
 
     def list_api_keys(self, user_id: str | None = None) -> list[ApiKey]:
         """List API keys, optionally filtered by user."""

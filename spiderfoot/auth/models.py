@@ -37,6 +37,15 @@ def _resolve_jwt_secret() -> str:
     return secrets.token_hex(32)
 
 
+class AuthBackendUnavailable(RuntimeError):
+    """The auth database could not be reached.
+
+    Deliberately distinct from a rejected credential: the HTTP boundary must
+    map this to 503, never 401.  Reporting an outage as "invalid API key"
+    sends operators hunting for a key problem that does not exist.
+    """
+
+
 class AuthMethod(str, Enum):
     """Supported authentication methods."""
     LOCAL = "local"
