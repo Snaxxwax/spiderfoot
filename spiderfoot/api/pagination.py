@@ -215,8 +215,11 @@ def paginate(
     total_pages = max(1, math.ceil(total_count / params.page_size))
     page = min(params.page, total_pages)
 
-    # Slice
-    start = params.offset
+    # Slice from the CLAMPED page, not params.offset. params.offset is derived from the
+    # originally requested page, so for a page past the end it pointed past all_items while
+    # `page` was reported as the clamped value -- an empty slice mislabelled as page 1. For
+    # an in-range page `page == params.page`, so this leaves the normal case unchanged.
+    start = (page - 1) * params.page_size
     end = start + params.page_size
     page_items = all_items[start:end]
 
