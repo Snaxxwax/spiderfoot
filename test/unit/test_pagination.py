@@ -221,9 +221,12 @@ class TestPaginate:
         from spiderfoot.api.pagination import paginate, make_params
         items = list(range(5))
         result = paginate(items, make_params(page=100, page_size=10))
-        # Page clamped to total_pages
-        assert result["items"] == []
+        # Page clamped to total_pages, and the slice follows the clamp: all 5 items fit on
+        # the single existing page. (Previously this returned [] while reporting page 1 --
+        # it sliced from the unclamped offset, an empty slice mislabelled as page 1.)
+        assert result["items"] == items
         assert result["page"] == 1
+        assert result["pages"] == 1
 
     def test_with_total_override(self):
         from spiderfoot.api.pagination import paginate, make_params
