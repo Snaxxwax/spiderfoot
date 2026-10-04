@@ -63,6 +63,14 @@ class ScanRequest(BaseModel):
     """Data model for a scan creation request."""
     name: str = Field(..., description="Name of the scan", min_length=1, max_length=256)
     target: str = Field(..., description="Target for the scan", min_length=1, max_length=1024)
+    target_type: str | None = Field(
+        None,
+        description="Explicit SpiderFoot target type (e.g. USERNAME, EMAILADDR, INTERNET_NAME). "
+        "When omitted the type is inferred from the target string. Supplying it is the only "
+        "way to scan a bare username: the inferrer types an unquoted handle as INTERNET_NAME "
+        "(no identity module consumes it) and a quoted one carries the quotes into every "
+        "module URL. With an explicit type the quotes are stripped and the value is used as-is.",
+    )
     modules: list[str] | None = Field(None, description="List of module names to run")
     type_filter: list[str] | None = Field(None, description="List of event types to include")
     engine: str | None = Field(None, description="Scan engine profile name (from /api/engines)")
@@ -625,7 +633,17 @@ async def list_scans(
     try:
         records = svc.list_scans()
         dicts = [r.to_dict() for r in records]
-        return paginate(dicts, params)
+        # Honour sort_by/sort_order. Without a sort_key, paginate() ignored them entirely,
+        # so the UI's `sort_by=created&sort_order=desc` silently returned DB order. Only
+        # whitelisted scalar fields are sortable; an unknown field leaves order untouched
+        # (paginate swallows the resulting KeyError) rather than erroring.
+        sortable = {"created", "started", "ended", "status", "target", "name", "result_count"}
+
+        def sort_key(row):
+            return row.get(params.sort_by, "")
+
+        key = sort_key if params.sort_by in sortable else None
+        return paginate(dicts, params, sort_key=key)
     except Exception as e:
         log.error("Failed to list scans: %s", e)
         raise HTTPException(status_code=500, detail="Failed to list scans") from e
@@ -738,6 +756,49 @@ async def search_scans(
         raise HTTPException(status_code=500, detail="Failed to search scans") from e
 
 
+# SpiderFoot target types that may be supplied explicitly. Matches what
+# SpiderFootHelpers.targetTypeFromString can return, so an explicit type can name any shape
+# the inferrer knows, plus the ones whose shape is ambiguous from the string alone (a bare
+# USERNAME, or a HUMAN_NAME without a space).
+_EXPLICIT_TARGET_TYPES = frozenset({
+    "INTERNET_NAME", "DOMAIN_NAME", "EMAILADDR", "IP_ADDRESS", "IPV6_ADDRESS",
+    "NETBLOCK_OWNER", "NETBLOCKV6_OWNER", "PHONE_NUMBER", "HUMAN_NAME", "USERNAME",
+    "BITCOIN_ADDRESS", "BGP_AS_OWNER",
+})
+
+
+def resolve_scan_target(target: str, target_type: str | None) -> tuple[str, str | None]:
+    """Return the (value, type) a scan should actually run with.
+
+    Without an explicit type, infer it from the string as before. With one, use it and
+    strip a single layer of surrounding quotes from the value. That combination is the whole
+    point: SpiderFoot's API otherwise reuses the target string as both the type signal and
+    the value, so a bare handle is typed INTERNET_NAME (no identity module consumes it) while
+    a quoted one is typed USERNAME but keeps its quotes and every module builds
+    https://%22handle%22.example/. An explicit type decouples the two and the stripped value
+    reaches the modules clean.
+    """
+    if target_type is None:
+        return target, SpiderFootHelpers.targetTypeFromString(target)
+    normalized = target_type.strip().upper()
+    if normalized not in _EXPLICIT_TARGET_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown target_type {target_type!r}; one of {sorted(_EXPLICIT_TARGET_TYPES)}",
+        )
+    value = target.strip()
+    # Only USERNAME/HUMAN_NAME use SpiderFoot's quote-wrapping convention, so only those
+    # carry quotes that must come off. For every other type a surrounding quote is part of
+    # the value (or simply invalid) and is left untouched, so this cannot mangle, say, an
+    # oddly-quoted domain into a different target.
+    if normalized in {"USERNAME", "HUMAN_NAME"}:
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+    if not value:
+        raise HTTPException(status_code=422, detail="target is empty after removing quotes")
+    return value, normalized
+
+
 @router.post("/scans", status_code=201, response_model=ScanCreateResponse)
 async def create_scan(
     scan_request: ScanRequest,
@@ -749,7 +810,9 @@ async def create_scan(
     try:
         config = get_app_config()
         scan_id = SpiderFootHelpers.genScanInstanceId()
-        target_type = SpiderFootHelpers.targetTypeFromString(scan_request.target)
+        target_value, target_type = resolve_scan_target(
+            scan_request.target, scan_request.target_type
+        )
         if not target_type:
             raise HTTPException(status_code=422, detail="Invalid target")
 
@@ -805,7 +868,7 @@ async def create_scan(
                 modules.append(storage_mod)
 
         try:
-            svc.create_scan(scan_id, scan_request.name, scan_request.target)
+            svc.create_scan(scan_id, scan_request.name, target_value)
         except Exception as e:
             log.error("Failed to create scan instance: %s", e)
             raise HTTPException(
@@ -816,7 +879,7 @@ async def create_scan(
             start_scan_background,
             scan_id,
             scan_request.name,
-            scan_request.target,
+            target_value,
             target_type,
             modules,
             scan_request.type_filter,
@@ -826,7 +889,7 @@ async def create_scan(
         return ScanCreateResponse(
             id=scan_id,
             name=scan_request.name,
-            target=scan_request.target,
+            target=target_value,
             status=DB_STATUS_STARTING,
             message="Scan created and starting",
         )
@@ -838,7 +901,7 @@ async def create_scan(
     finally:
         if _hooks:
             try:
-                _hooks.on_created(scan_id, scan_request.name, scan_request.target)
+                _hooks.on_created(scan_id, scan_request.name, target_value)
             except Exception as e:
                 log.debug("on_created hook failed for scan %s: %s", scan_id, e)
 
