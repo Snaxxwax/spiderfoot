@@ -14,6 +14,7 @@ Core DB connection, locking, schema management, and shared resources for SpiderF
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import psycopg2
 import time
@@ -25,6 +26,16 @@ from spiderfoot.db.db_utils import (
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+_DSN_PASSWORD = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^:/@\s'\"]+:)[^@\s'\"]+@")
+_KV_PASSWORD = re.compile(r"(?i)\b(password\s*=\s*)('[^']*'|\S+)")
+
+
+def redact_credentials(text: str) -> str:
+    """Mask passwords in URL-form (scheme://user:pw@host) and key=value DSNs."""
+    text = _DSN_PASSWORD.sub(r"\1***@", str(text))
+    return _KV_PASSWORD.sub(r"\1***", text)
 
 class DbCore:
     """
@@ -434,7 +445,7 @@ class DbCore:
     SCHEMA_VERSION = 1  # Increment this on every schema change
 
     def _log_db_error(self, msg, exc):
-        log.error("[DB] %s: %s", msg, exc)
+        log.error("[DB] %s: %s", redact_credentials(msg), redact_credentials(str(exc)))
 
 
     @staticmethod
@@ -528,8 +539,14 @@ class DbCore:
                 self.dbh = self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
                 self._owns_pooled_conn = True
             except Exception as e:
-                self._log_db_error(f"Error connecting to PostgreSQL database {database_path}", e)
-                raise OSError(f"Error connecting to PostgreSQL database {database_path}") from e
+                # The DSN carries the password, and psycopg2 can echo it in its own
+                # message ("invalid dsn: ..."), so neither may reach a log or a traceback.
+                safe = redact_credentials(database_path)
+                self._log_db_error(f"Error connecting to PostgreSQL database {safe}", e)
+                raise OSError(
+                    f"Error connecting to PostgreSQL database {safe}: "
+                    f"{type(e).__name__}: {redact_credentials(str(e))}"
+                ) from None
             with self.dbhLock:
                 try:
                     self.create()
