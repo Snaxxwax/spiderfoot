@@ -1029,11 +1029,16 @@ class AppConfig:
     # ------------------------------------------------------------------
 
     def summary(self) -> dict[str, Any]:
+        """Return a concise overview suitable for logging (DSN password masked)."""
+        from spiderfoot.db.db_core import redact_credentials as _redact
+        return self._summary(_redact)
+
+    def _summary(self, _redact) -> dict[str, Any]:
         """Return a concise overview suitable for logging."""
         return {
             "debug": self.core.debug,
             "max_threads": self.core.max_threads,
-            "db_path": self.database.db_path,
+            "db_path": _redact(self.database.db_path),
             "web": f"{self.web.host}:{self.web.port}",
             "api": f"{self.api.host}:{self.api.port}",
             "proxy": self.network.proxy_type or "none",
