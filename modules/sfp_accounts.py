@@ -175,6 +175,10 @@ class sfp_accounts(SpiderFootAsyncPlugin):
             """Process SiteQueue."""
             try:
                 while True:
+                    # Checked per site: a stop request otherwise waited for every queued
+                    # site (hundreds) to be fetched, ~7 minutes of requests after a cancel.
+                    if self.checkForStop():
+                        return
                     site = queue.get(timeout=0.1)
                     try:
                         self.checkSite(username, site)
