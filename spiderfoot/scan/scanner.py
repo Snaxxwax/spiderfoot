@@ -639,9 +639,7 @@ class SpiderFootScanner():
                 counter += 1
 
                 if log_status:
-                    scanstatus = self.__dbh.scanInstanceGet(self.__scanId)
-                    if scanstatus and scanstatus[6] == DB_STATUS_ABORT_REQUESTED:
-                        raise AssertionError(DB_STATUS_ABORT_REQUESTED)
+                    self.__raiseIfAbortRequested()
 
                 try:
                     sfEvent = self.eventQueue.get_nowait()
@@ -660,6 +658,12 @@ class SpiderFootScanner():
                             while not self.threadsFinished(log_status):
                                 log_status = counter % 100 == 0
                                 counter += 1
+                                # This wait lasts as long as the slowest running module
+                                # (sfp_accounts: two passes over ~700 sites, ~8 min). It
+                                # never checked for a stop, so ABORT-REQUESTED was only
+                                # seen after the module had finished all its requests.
+                                if log_status:
+                                    self.__raiseIfAbortRequested()
                                 sleep(.01)
                             final_passes -= 1
                     else:
@@ -691,6 +695,12 @@ class SpiderFootScanner():
             for mod in self.__moduleInstances.values():
                 mod._stopScanning = True
             self.__sharedThreadPool.shutdown(wait=True)
+
+    def __raiseIfAbortRequested(self) -> None:
+        """Raise AssertionError if the scan's DB status is ABORT-REQUESTED."""
+        scanstatus = self.__dbh.scanInstanceGet(self.__scanId)
+        if scanstatus and scanstatus[6] == DB_STATUS_ABORT_REQUESTED:
+            raise AssertionError(DB_STATUS_ABORT_REQUESTED)
 
     def threadsFinished(self, log_status: bool = False) -> bool:
         """Check whether all module queues are empty and no modules are running."""
