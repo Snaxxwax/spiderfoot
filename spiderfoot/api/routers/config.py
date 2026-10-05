@@ -104,6 +104,10 @@ async def get_config_endpoint(api_key: str = optional_auth_dep) -> ConfigSummary
             k: v for k, v in raw.items()
             if not k.startswith('__') or k in ['__version__', '__database']
         }
+        # __database is the PostgreSQL DSN, password included: show it masked.
+        if isinstance(safe_config.get('__database'), str):
+            from spiderfoot.db.db_core import redact_credentials
+            safe_config['__database'] = redact_credentials(safe_config['__database'])
         return ConfigSummaryResponse(
             summary=cfg.config_summary(),
             config=safe_config,
