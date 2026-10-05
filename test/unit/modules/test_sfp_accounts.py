@@ -30,6 +30,16 @@ class TestModuleAccounts(TestModuleBase):
         module = sfp_accounts()
         self.assertIsInstance(module.producedEvents(), list)
 
+    def test_checkSites_stops_fetching_once_a_stop_is_requested(self):
+        """A stop request must end the per-site loop, not wait for every queued site."""
+        module = sfp_accounts()
+        module.opts['_maxthreads'] = 2
+        checked = []
+        module.checkSite = lambda username, site: checked.append(site)
+        module.checkForStop = lambda: True
+        self.assertEqual(module.checkSites('exampleuser', [{'name': str(i)} for i in range(50)]), [])
+        self.assertEqual(checked, [])
+
     def setUp(self):
         """Set up before each test."""
         super().setUp()
