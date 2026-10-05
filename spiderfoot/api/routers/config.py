@@ -9,12 +9,39 @@ with flat-dict consumers.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 from ..dependencies import get_app_config, get_config_repository, optional_auth, get_api_key
 import logging
 from typing import Any
 
-router = APIRouter(dependencies=[Depends(get_api_key)])
+class _RedactingRoute(APIRoute):
+    """Mask passwords in any credentialed URL a config endpoint returns.
+
+    The live config holds the PostgreSQL DSN (``__database``, ``summary.db_path``), and
+    /config, /config/export and /config/diff returned it with its password. One route
+    class covers every endpoint in this router, including ones added later."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def redacting_handler(request):
+            from spiderfoot.db.db_core import redact_credentials
+
+            response = await handler(request)
+            body = getattr(response, "body", None)
+            if isinstance(body, (bytes, bytearray)):
+                text = body.decode("utf-8", "replace")
+                clean = redact_credentials(text)
+                if clean != text:
+                    response.body = clean.encode("utf-8")
+                    response.headers["content-length"] = str(len(response.body))
+            return response
+
+        return redacting_handler
+
+
+router = APIRouter(dependencies=[Depends(get_api_key)], route_class=_RedactingRoute)
 log = logging.getLogger(__name__)
 optional_auth_dep = Depends(optional_auth)
 
