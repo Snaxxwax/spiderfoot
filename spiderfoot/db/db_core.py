@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 
 _DSN_PASSWORD = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^:/@\s'\"]+:)[^@\s'\"]+@")
-_KV_PASSWORD = re.compile(r"(?i)\b(password\s*=\s*)('[^']*'|\S+)")
+_KV_PASSWORD = re.compile(r"(?i)\b(password\s*=\s*)('[^']*'|[^\s'\",}]+)")
 
 
 def redact_credentials(text: str) -> str:
