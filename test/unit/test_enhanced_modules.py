@@ -121,6 +121,16 @@ class TestTikTokOSINT(TestModuleBase):
         # Verify sleep was called for rate limiting
         mock_sleep.assert_called()
     
+    def test_profile_requires_matching_unique_id(self):
+        """Challenge and not-found pages are not profiles; only the target's own uniqueId is."""
+        parse = self.module._parse_profile_html
+        self.assertIsNone(parse('<html><title>Sign in</title><body>CAPTCHA</body></html>', 'someone'))
+        self.assertIsNone(parse('<html><body>Could not find this account</body></html>', 'someone'))
+        self.assertIsNone(parse('{"uniqueId":"someone_else","nickname":"X"}', 'someone'))
+        profile = parse('{"uniqueId":"SomeOne","nickname":"Some One","followerCount":5}', 'someone')
+        self.assertEqual(profile['display_name'], 'Some One')
+        self.assertEqual(profile['follower_count'], 5)
+
     def test_username_extraction_from_url(self):
         """Test username extraction from TikTok URLs."""
         test_cases = [

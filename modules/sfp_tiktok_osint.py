@@ -229,7 +229,18 @@ class sfp_tiktok_osint(SpiderFootAsyncPlugin):
         return self._parse_profile_html(res['content'], username)
 
     def _parse_profile_html(self, html_content: str, username: str) -> dict[str, Any] | None:
-        """Parse TikTok profile HTML content."""
+        """Parse TikTok profile HTML content.
+
+        A 200 is not a profile: TikTok answers sign-in walls, CAPTCHAs and "Could not find
+        this account" pages with 200 too, and every field below would simply come back
+        empty -- which used to be emitted as SOCIAL_MEDIA_PROFILE regardless. Only TikTok's
+        own embedded `"uniqueId":"<username>"` shows the page is this account's profile.
+        """
+        if not re.search(
+            r'"uniqueId"\s*:\s*"' + re.escape(username) + '"', html_content, re.IGNORECASE
+        ):
+            self.debug(f"TikTok page for {username} is not its profile (challenge, not found, or unrecognised)")
+            return None
         try:
             # Extract profile data from HTML
             profile_data = {

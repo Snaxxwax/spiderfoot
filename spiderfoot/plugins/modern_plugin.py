@@ -309,14 +309,24 @@ class SpiderFootModernPlugin(SpiderFootPlugin):
 
         Args:
             key: Cache key to look up.
-            ttl: Cache TTL in hours (used by legacy cacheGet; ignored by dict cache).
+            ttl: Cache TTL in hours. Passing it selects the legacy on-disk cache.
         """
         try:
+            # A TTL in hours is the legacy contract (cacheGet(label, hours)) that the ported
+            # modules are written against: string values, age checked on read, shared by every
+            # scan process. The cache service ignores the TTL and, with the memory backend,
+            # dies with each recycled worker child -- so sfp_accounts' 72h control sweep (1,432
+            # site checks) re-ran on every scan, and its list value broke `content.split()`.
+            # ponytail: the file cache lives where cachePath() points (a tmpfs in the scanner
+            # container), so one sweep per container recreate; mount a volume if that matters.
+            if ttl and getattr(self, "sf", None):
+                return self.sf.cacheGet(key, ttl)
+
             if self.cache is not None:
                 return self.cache.get(key)
 
-            if hasattr(self, "sf") and self.sf:
-                return self.sf.cacheGet(key, ttl or 24)
+            if getattr(self, "sf", None):
+                return self.sf.cacheGet(key, 24)
 
         except (KeyError, OSError) as e:
             self.log.debug("cache_get error for %s: %s", key, e)
@@ -324,8 +334,16 @@ class SpiderFootModernPlugin(SpiderFootPlugin):
         return None
 
     def cache_put(self, key: str, value: Any, ttl: int = DEFAULT_TTL_ONE_HOUR) -> bool:
-        """Put a value into the cache."""
+        """Put a value into the cache.
+
+        String/bytes/line-list values are the legacy contract and go to the on-disk cache
+        (see cache_get); anything else goes to the cache service.
+        """
         try:
+            if isinstance(value, (str, bytes, list)) and getattr(self, "sf", None):
+                self.sf.cachePut(key, value)
+                return True
+
             if self.cache is not None:
                 self.cache.put(key, value, ttl=ttl)
                 return True
