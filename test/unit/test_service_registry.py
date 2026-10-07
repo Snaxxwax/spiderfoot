@@ -254,6 +254,16 @@ class TestInitializeServices(unittest.TestCase):
         self.assertTrue(registry.has(SERVICE_CACHE))
         self.assertTrue(registry.has(SERVICE_VECTOR))
     
+    def test_result_cache_and_scheduler_construct(self):
+        # Their factories once passed kwargs the classes do not take; the scanner wiring
+        # caught the TypeError at DEBUG, so "registered" never meant "working".
+        from spiderfoot.result_cache import ScanResultCache
+        from spiderfoot.scan.concurrency import WorkStealingScheduler
+        from spiderfoot.service_registry import SERVICE_RESULT_CACHE, SERVICE_SCHEDULER
+        registry = initialize_services({})
+        self.assertIsInstance(registry.get(SERVICE_RESULT_CACHE), ScanResultCache)
+        self.assertIsInstance(registry.get(SERVICE_SCHEDULER), WorkStealingScheduler)
+
     def test_http_service_lazy_creation(self):
         sf_config = {}
         registry = initialize_services(sf_config)

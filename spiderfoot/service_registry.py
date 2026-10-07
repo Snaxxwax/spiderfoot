@@ -307,7 +307,7 @@ def initialize_services(sf_config: dict[str, Any]) -> ServiceRegistry:
         from spiderfoot.result_cache import ScanResultCache
         return ScanResultCache(
             max_size=int(sf_config.get("_sf_result_cache_size", 10000)),
-            ttl=int(sf_config.get("_sf_result_cache_ttl", 3600)),
+            default_ttl=int(sf_config.get("_sf_result_cache_ttl", 3600)),
         )
 
     registry.register_factory(SERVICE_RESULT_CACHE, _create_result_cache)
@@ -326,9 +326,8 @@ def initialize_services(sf_config: dict[str, Any]) -> ServiceRegistry:
     # --- Work-Stealing Scheduler ---
     def _create_scheduler():
         from spiderfoot.scan.concurrency import WorkStealingScheduler
-        return WorkStealingScheduler(
-            num_workers=int(sf_config.get("_sf_scan_workers", 4)),
-        )
+        # Takes no arguments: workers register themselves (register_worker).
+        return WorkStealingScheduler()
 
     registry.register_factory(SERVICE_SCHEDULER, _create_scheduler)
 
