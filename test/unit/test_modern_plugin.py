@@ -131,6 +131,26 @@ class TestModernPluginCache(unittest.TestCase):
         mock_sf.cachePut.assert_called_with("key2", "value2")
 
 
+    def test_legacy_ttl_calls_use_disk_cache_even_with_a_cache_service(self):
+        """sfp_accounts puts a list and reads it back with cache_get(key, 72) + .split()."""
+        import tempfile
+        from types import SimpleNamespace
+        from spiderfoot.sflib import helpers
+
+        mod = FakeModule()
+        mod.cache = MagicMock()  # a memory cache service is configured, as on the deployment
+        mod.sf = SimpleNamespace(cachePut=helpers.cachePut, cacheGet=helpers.cacheGet)
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(helpers.SpiderFootHelpers, "cachePath", return_value=tmp):
+            self.assertTrue(mod.cache_put("state", ["siteA", "siteB"]))
+            self.assertEqual(mod.cache_get("state", 72).split("\n")[:2], ["siteA", "siteB"])
+        mod.cache.put.assert_not_called()
+        mod.cache.get.assert_not_called()
+
+        # A structured value with no legacy TTL stays on the cache service.
+        mod.cache_put("ipinfo", {"ip": "x"})
+        mod.cache.put.assert_called_once()
+
 class TestModernPluginAsDict(unittest.TestCase):
     """Test enhanced asdict."""
 
