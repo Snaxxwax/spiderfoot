@@ -17,6 +17,12 @@ LABEL org.opencontainers.image.title="SpiderFoot Scanner" \
 ENV SF_SERVICE_ROLE=scanner \
     CELERY_WORKER_CONCURRENCY=4
 
+# Maigret + GHunt for sfp_tool_maigret / sfp_tool_ghunt (isolated venvs under /opt/sf-tools).
+USER root
+COPY docker/tools/ /tmp/sf-tools-install/
+RUN sh /tmp/sf-tools-install/install-identity-tools.sh && rm -rf /tmp/sf-tools-install
+USER spiderfoot
+
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD python -m celery -A spiderfoot.celery_app:celery_app inspect ping --timeout 5 || exit 1
 
