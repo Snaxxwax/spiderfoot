@@ -53,6 +53,7 @@ class sfp_tool_maigret(SpiderFootAsyncPlugin):
         'run_timeout': 900,
         'max_connections': 16,
         'retries': 1,
+        'proxy_url': "",
     }
 
     optdescs = {
@@ -62,6 +63,8 @@ class sfp_tool_maigret(SpiderFootAsyncPlugin):
         'run_timeout': "Maximum seconds one Maigret run may take before it is killed.",
         'max_connections': "Maximum concurrent connections Maigret opens.",
         'retries': "Retries for failed site checks.",
+        'proxy_url': "HTTP proxy for Maigret's site checks, e.g. Apify Proxy "
+        "http://groups-<GROUP>:<proxy password>@proxy.apify.com:8000. Empty = direct.",
     }
 
     results = None
@@ -100,6 +103,9 @@ class sfp_tool_maigret(SpiderFootAsyncPlugin):
             # Recursion would search usernames Maigret scraped off profiles, i.e. other
             # subjects. SpiderFoot's own event chain decides what gets scanned next.
             "--no-recursion",
+            # Maigret is the noisiest module (hundreds of sites per username), so it alone can
+            # be sent through a proxy. Some of Maigret's site-activation helpers ignore --proxy.
+            *(["--proxy", self.opts['proxy_url']] if self.opts.get('proxy_url') else []),
         ]
 
     def parseReport(self, report: dict) -> list:
@@ -165,7 +171,10 @@ class sfp_tool_maigret(SpiderFootAsyncPlugin):
 
             report = Path(workdir) / f"report_{eventData}_simple.json"
             if p.returncode != 0 or not report.is_file():
-                self.error(f"Maigret failed on {eventData}: {stderr.decode('utf-8', errors='replace')[-500:]}")
+                err = stderr.decode('utf-8', errors='replace')[-500:]
+                if self.opts.get('proxy_url'):
+                    err = err.replace(self.opts['proxy_url'], "<proxy_url>")  # it carries a password
+                self.error(f"Maigret failed on {eventData}: {err}")
                 return
             try:
                 data = json.loads(report.read_text(encoding="utf-8"))

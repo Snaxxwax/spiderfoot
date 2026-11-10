@@ -64,6 +64,9 @@ def test_maigret_command_never_recurses_or_autoupdates():
     assert "--no-recursion" in argv and "--no-autoupdate" in argv
     module.opts = dict(module.opts, top_sites=0)
     assert "--all-sites" in module.buildCommand("maigret", "Snaxxwax", "/tmp/x")
+    assert "--proxy" not in argv
+    module.opts = dict(module.opts, proxy_url="http://u:p@proxy.example:8000")
+    assert module.buildCommand("maigret", "Snaxxwax", "/tmp/x")[-2:] == ["--proxy", "http://u:p@proxy.example:8000"]
 
 
 def test_ghunt_report_parsing():
