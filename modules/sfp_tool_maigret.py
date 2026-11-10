@@ -51,7 +51,7 @@ class sfp_tool_maigret(SpiderFootAsyncPlugin):
         'top_sites': 500,
         'site_timeout': 15,
         'run_timeout': 900,
-        'max_connections': 32,
+        'max_connections': 16,
         'retries': 1,
     }
 

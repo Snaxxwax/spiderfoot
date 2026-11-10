@@ -46,11 +46,7 @@ class sfp_tool_ghunt(SpiderFootAsyncPlugin):
         'dataSource': {
             'type': "tool",
             'model': "FREE_AUTH_UNLIMITED",
-            'apiKeyInstructions': [
-                "GHunt authenticates as a Google account you own; use a dedicated one.",
-                "Run `ghunt login` once to produce creds.m.",
-                "Make that file readable by the scanner and set creds_path to it.",
-            ],
+            'apiKeyInstructions': "GHunt authenticates as a Google account you own; use a dedicated one. Run `ghunt login` once to produce creds.m. Make that file readable by the scanner and set creds_path to it.",
         },
     }
 
