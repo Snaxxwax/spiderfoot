@@ -1,0 +1,138 @@
+  minio:
+    image: ${SF_MINIO_IMAGE:?Set tested MinIO image}
+    container_name: sf-minio
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    tmpfs: [/tmp]
+    networks: [sf-backend]
+    volumes: [sf-background-minio:/data]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Required}
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:9000/minio/health/live]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits: {cpus: '1', memory: 768M}
+    logging: &background-logging
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  storage-init:
+    image: ${SF_API_IMAGE:?Required}
+    restart: on-failure
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    tmpfs: [/tmp]
+    networks: [sf-backend]
+    depends_on:
+      minio: {condition: service_healthy}
+    environment:
+      SF_MINIO_ENDPOINT: minio:9000
+      SF_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      SF_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      SF_MINIO_SECURE: 'false'
+    volumes:
+      - ./deployment/background/initialize_storage.py:/tmp/initialize_storage.py:ro
+    entrypoint: [python, /tmp/initialize_storage.py]
+    deploy:
+      resources:
+        limits: {cpus: '0.5', memory: 512M}
+    logging: *background-logging
+  qdrant:
+    image: ${SF_QDRANT_IMAGE:?Set pinned Qdrant image}
+    container_name: sf-qdrant
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    tmpfs: [/tmp]
+    networks: [sf-backend]
+    volumes: [sf-background-qdrant:/qdrant/storage, sf-background-snapshots:/qdrant/snapshots]
+    environment:
+      QDRANT__SERVICE__API_KEY: ${SF_QDRANT_API_KEY:?Required}
+      QDRANT__TELEMETRY_DISABLED: 'true'
+    healthcheck:
+      test: [CMD-SHELL, "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits: {cpus: '1', memory: 1G}
+    logging: *background-logging
+  vector:
+    image: ${SF_VECTOR_IMAGE:?Set pinned Vector image}
+    container_name: sf-vector
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    tmpfs: [/tmp]
+    networks: [sf-backend]
+    depends_on:
+      storage-init: {condition: service_completed_successfully}
+    volumes:
+      - ./deployment/background/vector.toml:/etc/vector/vector.toml:ro
+      - sf-background-vector:/var/lib/vector
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    command: [--config, /etc/vector/vector.toml]
+    healthcheck:
+      test: [CMD-SHELL, 'wget -qO- http://127.0.0.1:8687/health >/dev/null']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits: {cpus: '0.5', memory: 384M}
+    logging: *background-logging
+  background-analysis:
+    image: ${SF_BACKGROUND_IMAGE:?Set tested background image}
+    container_name: sf-background-analysis
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    tmpfs: [/tmp:size=128M, /home/spiderfoot/logs:size=32M, /home/spiderfoot/data:size=32M]
+    networks: [sf-backend, default]
+    depends_on:
+      postgres: {condition: service_healthy}
+      storage-init: {condition: service_completed_successfully}
+      qdrant: {condition: service_healthy}
+      vector: {condition: service_started}
+    environment:
+      SF_POSTGRES_DSN: ${SF_POSTGRES_DSN:?Required}
+      SF_BACKGROUND_SINCE_MS: ${SF_BACKGROUND_SINCE_MS:?Required}
+      SF_QDRANT_HOST: qdrant
+      SF_QDRANT_API_KEY: ${SF_QDRANT_API_KEY}
+      SF_MINIO_ENDPOINT: minio:9000
+      SF_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      SF_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      SF_MINIO_SECURE: 'false'
+      SF_LLM_MODEL: openai/gpt-6-astra
+      SF_LLM_API_BASE: https://openrouter.ai/api/v1
+      SF_LLM_API_KEY: ${OPENROUTER_API_KEY:-}
+      SF_EMBEDDING_PROVIDER: openai
+      SF_EMBEDDING_MODEL: openai/text-embedding-3-small
+      SF_EMBEDDING_API_BASE: https://openrouter.ai/api/v1
+      SF_EMBEDDING_API_KEY: ${OPENROUTER_API_KEY:-}
+      SF_EMBEDDING_DIMENSIONS: '1536'
+    entrypoint: [python, -m, spiderfoot.services.background_analysis]
+    healthcheck:
+      test: [CMD, python, -c, "import os,time; assert time.time()-os.stat('/tmp/background-heartbeat').st_mtime < 900"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits: {cpus: '1', memory: 768M}
+    logging: *background-logging

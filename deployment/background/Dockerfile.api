@@ -1,0 +1,4 @@
+FROM spiderfoot-api:config-startup-20261109
+COPY background_analysis.py /home/spiderfoot/spiderfoot/services/background_analysis.py
+COPY main.py /home/spiderfoot/spiderfoot/api/main.py
+COPY router.py /home/spiderfoot/spiderfoot/api/routers/background_analysis.py

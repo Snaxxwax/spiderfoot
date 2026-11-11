@@ -1,0 +1,2 @@
+FROM spiderfoot-frontend:pre-background-20261109
+COPY dist/ /usr/share/nginx/html/

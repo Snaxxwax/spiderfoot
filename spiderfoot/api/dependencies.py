@@ -98,7 +98,8 @@ class Config:
         self.defaultConfig = default_config.copy()
         dbh = SpiderFootDb(self.defaultConfig, init=True)
         sf = SpiderFoot(self.defaultConfig)
-        merged = sf.configUnserialize(dbh.configGet(), self.defaultConfig)
+        stored_options = dbh.configGet()
+        merged = self.defaultConfig.copy()
 
         # Load modules from filesystem (same as sf_orchestrator)
         if not merged.get('__modules__'):
@@ -117,6 +118,9 @@ class Config:
                 except Exception as exc:
                     self.log.warning("Failed to load modules: %s", exc)
 
+        # Deserialization needs module defaults to determine option types.
+        # Merging before discovery silently discards saved provider credentials.
+        merged = sf.configUnserialize(stored_options, merged)
         self._app_config = AppConfig.from_dict(merged)
         self._app_config.apply_env_overrides()
 

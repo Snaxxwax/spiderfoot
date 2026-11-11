@@ -155,7 +155,10 @@ def initialize_security(config: dict) -> object | None:
 # ── Router configuration ──────────────────────────────────────────────
 # Each tuple: (router, prefix, tags)
 # Versioned routers are mounted under /api/v1/ AND legacy /api/
+from spiderfoot.api.routers import background_analysis
+
 _VERSIONED_ROUTERS = [
+    (background_analysis.router, "/api", ["reports"]),
     (scan.router,             "/api", ["scans"]),
     (workspace.router,        "/api", ["workspaces"]),
     (data.router,             "/api", ["data"]),

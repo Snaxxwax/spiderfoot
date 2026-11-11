@@ -1,5 +1,6 @@
 import { memo, useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
+import api from '../../lib/api';
 import { safeSetItem } from '../../lib/safeStorage';
 import {
   scanApi, agentsApi, formatDuration,
@@ -159,8 +160,21 @@ function ReportTab({ scanId, scan }: { scanId: string; scan?: Scan }) {
   const storageKey = `sf_report_${scanId}`;
   useEffect(() => {
     const saved = localStorage.getItem(storageKey);
-    if (saved) setReportContent(saved);
+    setReportContent(saved || '');
   }, [storageKey]);
+
+  const { data: automaticAnalysis } = useQuery({
+    queryKey: ['automatic-analysis', scanId],
+    queryFn: ({ signal }) => api.get<{ state: string; report?: string }>(`/api/scans/${scanId}/analysis`, { signal }).then(r => r.data),
+    enabled: !!scanId,
+    refetchInterval: query => ['complete', 'disabled', 'failed', 'cancelled', 'not_scheduled'].includes(query.state.data?.state ?? '') ? false : 15000,
+  });
+  const automaticEnabled = !!automaticAnalysis && automaticAnalysis.state !== 'disabled';
+  useEffect(() => {
+    if (automaticAnalysis?.report && !reportContent && !isEditing) {
+      setReportContent(automaticAnalysis.report);
+    }
+  }, [automaticAnalysis, reportContent, isEditing]);
 
   const { data: summaryData } = useQuery({
     queryKey: ['scan-summary', scanId],
@@ -428,9 +442,18 @@ ${html}
 
   return (
     <div className="space-y-4">
+      {automaticAnalysis && !['complete', 'disabled', 'cancelled'].includes(automaticAnalysis.state) && (
+        <p className="text-sm text-dark-400" role="status">
+          {automaticAnalysis.state === 'not_scheduled' ? 'This older scan predates automatic analysis.'
+            : automaticAnalysis.state === 'failed' ? 'Automatic analysis could not finish. Your scan results are available.'
+            : automaticAnalysis.state === 'waiting_configuration' ? 'Automatic analysis is awaiting administrator setup.'
+            : scan?.status === 'FINISHED' ? 'Your report is being prepared automatically.'
+            : 'Your report will be prepared automatically when the scan finishes.'}
+        </p>
+      )}
       <div className="flex items-center justify-between">
         <p className="text-sm text-dark-400">
-          {reportContent ? 'AI-generated threat intelligence report' : 'Generate a comprehensive threat report'}
+          {reportContent ? 'Scan intelligence report' : automaticEnabled ? 'Automatic scan analysis' : 'Generate a comprehensive threat report'}
         </p>
         <div className="flex items-center gap-2">
           {reportContent && !isEditing && (
@@ -452,7 +475,7 @@ ${html}
               </button>
             </>
           )}
-          <button
+          {!automaticEnabled && <button
             className="btn-primary"
             onClick={() => generateMut.mutate()}
             disabled={generateMut.isPending}
@@ -462,7 +485,7 @@ ${html}
             ) : (
               <><Sparkles className="h-4 w-4" /> Generate AI Report</>
             )}
-          </button>
+          </button>}
           <button className="btn-secondary" onClick={generateClientReport}>
             <FileText className="h-4 w-4" /> Quick Report
           </button>
@@ -523,12 +546,12 @@ ${html}
         <EmptyState
           icon={Brain}
           title="No report generated"
-          description="Click 'Generate AI Report' to create a comprehensive threat intelligence report based on the scan data, or 'Quick Report' for a client-side summary."
+          description={automaticEnabled ? "Reports appear here automatically after analysis. Quick Report provides an immediate summary." : "Generate an AI report or use Quick Report for an immediate summary."}
           action={
             <div className="flex gap-2">
-              <button className="btn-primary" onClick={() => generateMut.mutate()} disabled={generateMut.isPending}>
+              {!automaticEnabled && <button className="btn-primary" onClick={() => generateMut.mutate()} disabled={generateMut.isPending}>
                 <Sparkles className="h-4 w-4" /> Generate AI Report
-              </button>
+              </button>}
               <button className="btn-secondary" onClick={generateClientReport}>
                 <FileText className="h-4 w-4" /> Quick Report
               </button>

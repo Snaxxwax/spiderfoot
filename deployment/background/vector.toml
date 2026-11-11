@@ -1,0 +1,28 @@
+data_dir = "/var/lib/vector"
+[api]
+enabled = true
+address = "0.0.0.0:8687"
+[sources.events]
+type = "http_server"
+address = "0.0.0.0:8686"
+decoding.codec = "json"
+[sinks.archive]
+type = "aws_s3"
+inputs = ["events"]
+bucket = "sf-logs"
+endpoint = "http://minio:9000"
+region = "us-east-1"
+force_path_style = true
+key_prefix = "telemetry/%Y/%m/%d/"
+compression = "gzip"
+encoding.codec = "json"
+batch.timeout_secs = 10
+buffer.type = "disk"
+buffer.max_size = 268435488
+buffer.when_full = "block"
+[sources.metrics]
+type = "internal_metrics"
+[sinks.metrics_export]
+type = "prometheus_exporter"
+inputs = ["metrics"]
+address = "0.0.0.0:9598"
