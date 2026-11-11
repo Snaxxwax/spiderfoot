@@ -98,7 +98,8 @@ class Config:
         self.defaultConfig = default_config.copy()
         dbh = SpiderFootDb(self.defaultConfig, init=True)
         sf = SpiderFoot(self.defaultConfig)
-        merged = sf.configUnserialize(dbh.configGet(), self.defaultConfig)
+        stored_options = dbh.configGet()
+        merged = self.defaultConfig.copy()
 
         # Load modules from filesystem (same as sf_orchestrator)
         if not merged.get('__modules__'):
@@ -117,8 +118,24 @@ class Config:
                 except Exception as exc:
                     self.log.warning("Failed to load modules: %s", exc)
 
+        # Deserialization needs module defaults to determine option types.
+        # Merging before discovery silently discards saved provider credentials.
+        merged = sf.configUnserialize(stored_options, merged)
         self._app_config = AppConfig.from_dict(merged)
         self._app_config.apply_env_overrides()
+        self._snapshot_saved()
+
+    def _serialised(self) -> dict[str, Any]:
+        from spiderfoot.sflib import configSerialize
+        return configSerialize(self.get_config(), filterSystem=True)
+
+    def _snapshot_saved(self) -> None:
+        """Remember what the database held when this process last read or wrote it."""
+        try:
+            self._saved = self._serialised()
+        except Exception as exc:
+            self.log.warning("Could not snapshot config: %s", exc)
+            self._saved = {}
 
     # ------------------------------------------------------------------
     # Typed access
@@ -162,19 +179,28 @@ class Config:
         self._app_config.merge({key: value})
 
     def save_config(self) -> None:
-        """Persist current config to the database."""
+        """Persist the options this process changed since it last read or wrote them.
+
+        Writing the whole in-memory config let a process holding a stale copy (another
+        API worker) overwrite every option saved elsewhere with its old values, which
+        silently emptied API keys. configSet upserts per key, so writing only the diff
+        leaves everyone else's changes alone.
+        """
         try:
             flat = self.get_config()
             dbh = SpiderFootDb(flat)
-            # configSet only handles scalar values; configSerialize flattens the
-            # config (including __modules__.*.opts) into storable key/value pairs.
-            from spiderfoot.sflib import configSerialize
-            serialised = configSerialize(flat, filterSystem=True)
-            if serialised:
-                dbh.configSet(serialised)
-                self.log.info("Configuration saved to database (%d keys)", len(serialised))
+            # configSerialize flattens the config (including __modules__.*.opts)
+            # into storable key/value pairs.
+            serialised = self._serialised()
+            saved = getattr(self, "_saved", {})
+            changed = {k: v for k, v in serialised.items() if saved.get(k) != v}
+            if changed:
+                dbh.configSet(changed)
+                saved.update(changed)
+                self._saved = saved
+                self.log.info("Configuration saved to database (%d changed keys)", len(changed))
             else:
-                self.log.warning("save_config: serialised config is empty — nothing written")
+                self.log.info("save_config: nothing changed — nothing written")
         except Exception as exc:
             self.log.warning("Failed to save config to DB: %s", exc)
 
@@ -187,6 +213,7 @@ class Config:
             merged = sf.configUnserialize(dbh.configGet(), flat)
             self._app_config = AppConfig.from_dict(merged)
             self._app_config.apply_env_overrides()
+            self._snapshot_saved()
             self.log.info("Configuration reloaded from database")
         except Exception as exc:
             self.log.warning("Failed to reload config from DB: %s", exc)

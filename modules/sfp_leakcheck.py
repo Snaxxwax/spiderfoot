@@ -51,7 +51,7 @@ class sfp_leakcheck(SpiderFootAsyncPlugin):
 
     # Option descriptions
     optdescs = {
-        "api_key": "LeakCheck API key.",
+        "api_key": "LeakCheck API key. Without one, or when the key's plan has no API access, the free public API is used (breach sources for email addresses only).",
         "pause": "Number of seconds to wait between each API call.",
     }
 
@@ -62,6 +62,7 @@ class sfp_leakcheck(SpiderFootAsyncPlugin):
         """Set up the module."""
         super().setup(sfc, userOpts or {})
         self.errorState = False
+        self.usePublic = False
         self.results = self.tempStorage()
     # What events is this module interested in for input
     def watchedEvents(self) -> list:
@@ -120,6 +121,12 @@ class sfp_leakcheck(SpiderFootAsyncPlugin):
             self.errorState = True
             return None
 
+        if res["code"] == "403":
+            # Free accounts have a key but no API plan; the public API still works.
+            self.info("LeakCheck plan has no API access; using the public API instead.")
+            self.usePublic = True
+            return None
+
         if res["code"] == "401":
             self.error("Missing or incorrect API key.")
             self.errorState = True
@@ -153,6 +160,46 @@ class sfp_leakcheck(SpiderFootAsyncPlugin):
             self.debug(f"Error processing JSON response: {e}")
             return None
 
+    def handlePublic(self, event: SpiderFootEvent) -> None:
+        """Report breach sources from the free public API (email addresses only)."""
+        if event.eventType != "EMAILADDR":
+            return
+
+        res = self.fetch_url(
+            f"https://leakcheck.io/api/public?check={event.data}",
+            timeout=15,
+            useragent=self.opts["_useragent"],
+            verify=True,
+        )
+        time.sleep(self.opts["pause"])
+        if res["code"] != "200" or not res["content"]:
+            self.error("Unable to fetch data from the LeakCheck public API.")
+            return
+
+        try:
+            data = json.loads(res["content"])
+        except Exception as e:
+            self.debug(f"Error processing JSON response: {e}")
+            return
+
+        # {"success": false, "error": "Not found"} means no breaches, not a failure.
+        if not data.get("success") or not data.get("found"):
+            self.debug("No breach data found.")
+            return
+
+        for source in data.get("sources", []):
+            if self.checkForStop():
+                return
+            evt = SpiderFootEvent(
+                "EMAILADDR_COMPROMISED",
+                f"{event.data} [{source.get('name', 'N/A')} - {source.get('date') or 'Unknown Date'}]",
+                self.__name__,
+                event,
+            )
+            self.notifyListeners(evt)
+
+        self.notifyListeners(SpiderFootEvent("RAW_RIR_DATA", json.dumps(data), self.__name__, event))
+
     # Handle events sent to this module
     def handleEvent(self, event: SpiderFootEvent) -> None:
         """Handle an event received by this module."""
@@ -173,12 +220,14 @@ class sfp_leakcheck(SpiderFootAsyncPlugin):
 
         self.debug(f"Received event, {eventName}, from {srcModuleName}")
 
-        if self.opts["api_key"] == "":
-            self.error("You enabled sfp_leakcheck but did not set an API key!")
-            self.errorState = True
+        if not self.opts["api_key"] or self.usePublic:
+            self.handlePublic(event)
             return
 
         data = self.query(event)
+        if self.usePublic:
+            self.handlePublic(event)
+            return
 
         if not data:
             return

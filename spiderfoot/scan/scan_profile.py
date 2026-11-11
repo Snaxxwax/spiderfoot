@@ -429,6 +429,33 @@ class ProfileManager:
         ))
 
         self.register(ScanProfile(
+            name="person-identity",
+            display_name="Person / Identity",
+            description=(
+                "Accounts, usernames, breaches and web mentions for an email "
+                "address, username or person's name. The modules that have "
+                "actually produced results on identity targets, instead of "
+                "all 300+; sfp_accounts is the only USERNAME source, so every "
+                "username module depends on it."
+            ),
+            category=ProfileCategory.SOCIAL,
+            include_modules=[
+                # Username derivation and account discovery
+                "sfp_accounts", "sfp_tool_maigret", "sfp_tool_ghunt",
+                "sfp_social", "sfp_tiktok_osint", "sfp_github", "sfp_keybase",
+                "sfp_gravatar", "sfp_names", "sfp_email", "sfp_pgp",
+                # Search and social scraping
+                "sfp_searxng", "sfp_apify_google", "sfp_apify_instagram",
+                "sfp_apify_tiktok", "sfp_apify_reddit",
+                # Breaches and enrichment
+                "sfp_leakcheck", "sfp_intelx", "sfp_citadel", "sfp_hudsonrock",
+                "sfp_hunter", "sfp_emailrep",
+                "sfp_advanced_correlation",
+            ],
+            tags=["person", "identity", "email", "username", "osint"],
+        ))
+
+        self.register(ScanProfile(
             name="tools-only",
             display_name="External Tools Only",
             description=(
